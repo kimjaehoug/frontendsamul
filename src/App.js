@@ -1,5 +1,5 @@
 // src/App.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 
 function App() {
@@ -15,7 +15,7 @@ function App() {
   const [isRegistering, setIsRegistering] = useState(false); // 가입 모드 상태
   const [cancelModalContent, setCancelModalContent] = useState(null); // 토글 방식 취소 팝업 상태
 
-  // 4개의 5x7 그리드 좌석 데이터 (각 그룹은 독립적으로 관리)
+  // 4개의 3x9 그리드 좌석 데이터 (각 그룹은 독립적으로 관리)
   const lockers = ['Locker1', 'Locker2', 'Locker3', 'Locker4'];
   const generateSeats = (lockerId) => {
     return Array.from({ length: 3 }, (_, row) =>
@@ -23,30 +23,61 @@ function App() {
     );
   };
 
-  // 백엔드에서 좌석 상태 가져오기 (초기화)
-  useEffect(() => {
-    if (isLoggedIn) {
-      fetchSeatStatuses();
-    }
-  }, [isLoggedIn]);
+  // CSRF 토큰 가져오기 함수
+  const getCsrfToken = () => {
+    return document.cookie.match(/csrftoken=([^;]+)/)?.[1] || localStorage.getItem('csrftoken');
+  };
 
-  const fetchSeatStatuses = async () => {
+  // CSRF 토큰 초기화 및 저장
+  const initializeCsrfToken = async () => {
     try {
-      const response = await fetch('https://web-production-be0ca.up.railway.app/api/seats/');
+      const response = await fetch('https://web-production-be0ca.up.railway.app/api/seats/', {
+        credentials: 'include', // 쿠키 포함
+      });
+      if (response.ok) {
+        const csrfToken = response.headers.get('X-CSRFToken') || document.cookie.match(/csrftoken=([^;]+)/)?.[1];
+        if (csrfToken) {
+          localStorage.setItem('csrftoken', csrfToken);
+          console.log('CSRF token initialized:', csrfToken);
+        }
+      }
+    } catch (error) {
+      console.error('Error initializing CSRF token:', error);
+    }
+  };
+
+  // fetchSeatStatuses를 useCallback으로 메모이제이션
+  const fetchSeatStatuses = useCallback(async () => {
+    try {
+      const csrfToken = getCsrfToken();
+      const response = await fetch('https://web-production-be0ca.up.railway.app/api/seats/', {
+        credentials: 'include', // 쿠키 포함
+        headers: {
+          'X-CSRFToken': csrfToken, // CSRF 토큰 추가
+        },
+      });
       if (!response.ok) throw new Error('Failed to fetch seat statuses');
       const data = await response.json();
       const statuses = {};
       data.forEach(seat => {
         statuses[seat.seat] = {
           status: seat.status || 'available',
-          name: seat.name || null  // 예약자 이름 추가
+          name: seat.name || null, // 예약자 이름 추가
         };
       });
       setSeatStatuses(statuses);
     } catch (error) {
       console.error('Error fetching seat statuses:', error);
     }
-  };
+  }, [getCsrfToken]); // getCsrfToken이 변경될 때만 새로 생성
+
+  // useEffect에서 의존성 배열에 fetchSeatStatuses 추가
+  useEffect(() => {
+    initializeCsrfToken(); // CSRF 토큰 초기화
+    if (isLoggedIn) {
+      fetchSeatStatuses();
+    }
+  }, [isLoggedIn, fetchSeatStatuses]); // fetchSeatStatuses 포함
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -55,10 +86,15 @@ function App() {
     console.log('Logging in with data:', loginData);
 
     try {
+      const csrfToken = getCsrfToken();
       const response = await fetch('https://web-production-be0ca.up.railway.app/api/login/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken, // CSRF 토큰 추가
+        },
         body: JSON.stringify(loginData),
+        credentials: 'include', // 쿠키 포함
       });
       if (!response.ok) throw new Error(await response.text() || 'Login failed');
       const data = await response.json();
@@ -67,6 +103,7 @@ function App() {
       setName(data.name || '');
       setStudentId(data.studentid || '');
       setPassword(''); // 비밀번호 초기화 (로그인 후 사용 안 함)
+      localStorage.setItem('csrftoken', data.csrftoken || csrfToken); // 토큰 업데이트 (선택)
     } catch (error) {
       console.error('Error during login:', error);
       setLoginError(`로그인 실패: ${error.message || '서버 오류가 발생했습니다.'}`);
@@ -78,10 +115,15 @@ function App() {
     const registerData = { name, studentid, password };
     
     try {
+      const csrfToken = getCsrfToken();
       const response = await fetch('https://web-production-be0ca.up.railway.app/api/register/', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrfToken, // CSRF 토큰 추가
+        },
         body: JSON.stringify(registerData),
+        credentials: 'include', // 쿠키 포함
       });
       if (!response.ok) throw new Error(await response.text() || 'Registration failed');
       alert('가입 성공! 로그인해주세요.');
@@ -113,15 +155,15 @@ function App() {
     console.log('Sending with credentials:', { credentials: 'include' });
 
     try {
-      const csrfToken = localStorage.getItem('csrftoken');
+      const csrfToken = getCsrfToken();
       const response = await fetch('https://web-production-be0ca.up.railway.app/api/reserve/', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,  // CSRF 토큰 헤더 추가
+          'X-CSRFToken': csrfToken, // CSRF 토큰 추가
         },
         body: JSON.stringify(reservation),
-        credentials: 'include',  // 세션 쿠키 포함
+        credentials: 'include', // 세션 쿠키 포함
       });
       if (!response.ok) throw new Error(await response.text() || 'Reservation failed');
       alert('예약 성공!');
@@ -161,15 +203,15 @@ function App() {
     console.log('Canceling with data:', cancelData);
 
     try {
-      const csrfToken = localStorage.getItem('csrftoken');
+      const csrfToken = getCsrfToken();
       const response = await fetch('https://web-production-be0ca.up.railway.app/api/cancel/', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'X-CSRFToken': csrfToken,  // CSRF 토큰 헤더 추가
+          'X-CSRFToken': csrfToken, // CSRF 토큰 추가
         },
         body: JSON.stringify(cancelData),
-        credentials: 'include',  // 세션 쿠키 포함
+        credentials: 'include', // 세션 쿠키 포함
       });
       if (!response.ok) throw new Error(await response.text() || 'Cancel failed');
       alert('모든 예약 취소 성공!');
@@ -359,7 +401,7 @@ function App() {
             </div>
           </form>
 
-          {/* 4개의 5x7 그리드 표시 */}
+          {/* 4개의 3x9 그리드 표시 */}
           {lockers.map((locker) => (
             <div key={locker} className="locker-group">
               <h2>{locker}</h2>
